@@ -1,0 +1,21 @@
+{
+  "name": "dynamic",
+  "version": "0.0.1",
+  "descripton": "Dynamic loader for ES6+ JavaScript systems.",
+  "main": "dynamic.js",
+  "repository": "https://github.com/AdaptivElite/dynamic",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "ECMA6",
+    "dynamic",
+    "ESNext",
+    "auto reload",
+    "persistent"
+  ],
+  "author": "AdaptivElite <steven@adaptivelite.com> (http://www.adaptivelite.com)",
+  "license": "ISC",
+  "dependencies": {
+  }
+}
