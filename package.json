@@ -1,6 +1,6 @@
 {
-  "name": "dynamic",
-  "version": "0.0.1",
+  "name": "dynamicjs",
+  "version": "0.0.2",
   "descripton": "Dynamic loader for ES6+ JavaScript systems.",
   "main": "dynamic.js",
   "repository": "https://github.com/AdaptivElite/dynamic",

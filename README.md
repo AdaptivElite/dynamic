@@ -3,7 +3,7 @@ Dynamic loader for ES6+ Javascript systems.
 
 Install
 =======
-`npm install dynamic`
+`npm install dynamicjs`
 
 Use
 ===
@@ -14,7 +14,7 @@ Replaces require with `dynamic` and `superDynamic`.
 Example
 =======
 ```
-let init = require( "./library/dynamic.js" ).initialize( {
+let init = require( "dynamicjs" ).initialize( {
   persistentObjectVariable : "inital value"
 });
 
