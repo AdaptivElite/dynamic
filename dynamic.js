@@ -53,25 +53,38 @@ function caller (depth) {
 global.dynamicCaller = caller;
 
 var dynamic = {
-  _SetupWatch : function( fileName ){
-    if( this._watchFiles[fileName] === undefined ){
-      this._watchFiles[fileName] = {};
-      var changeUpdate = false;
-      try{
-        this._fileWatchers[fileName] = fs.watch( fileName, ( e ) => {
-          switch( e ){
-            case "change":
-              changeUpdate = true;
-              this._ReloadFile( e, fileName, ( ) => {
-                changeUpdate = false;
-              } );
-              break;
+  _WatchDir : function( dirname ){
+    this._watchFiles[dirname] = {};
+    try{
+      this._fileWatchers[dirname] = fs.watch( dirname, ( e, eFileName ) => {
+        if( this._expandedWatchers[dirname] !== undefined ){
+          //@TODO Allow new and deleted files//
+        }
+        if( this._watchFiles[dirname][eFileName] === false ){
+          this._watchFiles[dirname][eFileName] = true;
+          this._ReloadFile( e, dirname + "/" + eFileName, ( ) => {
+            this._watchFiles[dirname][eFileName] = false;
+          } );
+          if( e === "rename" ){
+            //@TODO Check to see if it is a new file
+
+            //@TODO Check to see if it still exists
+
+            //@TODO Figure out how to do a real rename
           }
-        } );
-      }
-      catch( ex ){
-        console.warn( "Unable to setup watcher for " + fileName );
-      }
+        }
+      } );
+    }
+    catch( ex ){
+      console.warn( "Unable to setup watcher for " + fileName );
+    }
+  },
+  _SetupWatch : function( fileName ){
+    if( this._watchFiles[path.dirname( fileName )] === undefined ){
+      this._WatchDir( path.dirname( fileName ) );
+    }
+    if( this._watchFiles[path.dirname( fileName )][path.basename( fileName )] === undefined ){
+      this._watchFiles[path.dirname( fileName )][path.basename( fileName )] = false;
       this._GetHash( fileName, ( hash ) => {
         this._hashList[fileName] = hash;
       } );
@@ -81,6 +94,7 @@ var dynamic = {
   _dependList : { },
   _hashList : { },
   _fileWatchers : { },
+  _expandedWatchers : { },
   _watchFiles : { },
 
   _ReloadFile : function( trigger, filePath, callback ){
