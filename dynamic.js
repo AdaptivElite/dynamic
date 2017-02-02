@@ -54,6 +54,9 @@ global.dynamicCaller = caller;
 
 var dynamic = {
   _WatchDir : function( dirname ){
+    if( this._fileWatchers[dirname] !== undefined ){
+      return;
+    }
     this._watchFiles[dirname] = {};
     try{
       this._fileWatchers[dirname] = fs.watch( dirname, ( e, eFileName ) => {
@@ -62,7 +65,7 @@ var dynamic = {
         }
         if( this._watchFiles[dirname][eFileName] === false ){
           this._watchFiles[dirname][eFileName] = true;
-          this._ReloadFile( e, dirname + "/" + eFileName, ( ) => {
+          this._ReloadFile( e, path.normalize( dirname + "/" + eFileName ), ( ) => {
             this._watchFiles[dirname][eFileName] = false;
           } );
           if( e === "rename" ){
@@ -96,12 +99,25 @@ var dynamic = {
   _fileWatchers : { },
   _expandedWatchers : { },
   _watchFiles : { },
+  _rawUpdate : { },
 
   _ReloadFile : function( trigger, filePath, callback ){
     this._GetHash( filePath, ( changeHash ) => {
       if( changeHash !== null && changeHash !== this._hashList[filePath] ){
-        this._dynamicUpdate[filePath] = true;
-        this._ReloadPath( filePath );
+        if( this._rawUpdate[filePath] !== undefined ){
+          fs.readFile( filePath, ( err, fileData ) => {
+            if( !err ){
+              this._rawUpdate[filePath](fileData);
+            }
+            else{
+              console.error( "Unable to update changes to file " + filePath );
+            }
+          });
+        }
+        else{
+          this._dynamicUpdate[filePath] = true;
+          this._ReloadPath( filePath );
+        }
         this._hashList[filePath] = changeHash;
         callback();
         this._ResolveDependencies( filePath );
@@ -356,8 +372,9 @@ var dynamic = {
 
   _NewDynamicMethod( fileName, dynamicName, initialDynamic ){
 
+    let dynamicMethod = null;
     //Magic method that is a wraper for the orignal method.
-    function dynamicMethod(){
+    dynamicMethod = function(){
 
       //If we are rebuilding the object then make sure we copy it first//
       let dynamicId = dynamic._UniqueNumber();
@@ -385,6 +402,7 @@ var dynamic = {
         let oldInitialDynamic = initialDynamic;
         initialDynamic = nextInitialDynamic;
         try{
+          dynamicMethod.prototype.__original = initialDynamic;
           dynamic._ReplaceDeepPrototype( initialDynamic );
           var newProxy = Reflect.construct( initialDynamic, priorArgs, surrogateProxy );
         }
@@ -400,6 +418,8 @@ var dynamic = {
       dynamic._dynamicInstanceMap[fileName][dynamicName][this.__dynamicId] = this;
       return proxyInstance;
     };
+
+    dynamicMethod.prototype.__original = initialDynamic;
 
     //Make sure mapping exists
     if( this._dynamicMethodMap[fileName] === undefined ){
@@ -468,6 +488,9 @@ global.dynamic = function( fileName, caller ){
 //When extending classes only the last class in the call chain should be dynamic.
 //To avoid this a dependecy is added but the original require is returned.
 global.superDynamic = function( fileName, caller ){
+  if( !fileName.endsWith( ".js" ) ){
+    fileName = fileName + ".js";
+  }
   caller = caller || dynamicCaller();
   if( !path.isAbsolute( fileName ) ){
     fileName = path.resolve( path.dirname( caller ), fileName );
@@ -475,6 +498,31 @@ global.superDynamic = function( fileName, caller ){
   this._AddDependent( fileName, caller );
 
   return this.BindDynamics(fileName);
+}.bind( dynamic );
+
+global.dynamicFile = function( fileName, updateCallback, updateDependent = false, caller = null ){
+  caller = caller || dynamicCaller();
+  if( !path.isAbsolute( fileName ) ){
+    fileName = path.resolve( path.dirname( caller ), fileName );
+  }
+  if( updateDependent ){
+    this._AddDependent( fileName, caller );
+  }
+
+  this._rawUpdate[fileName] = updateCallback;
+  if( this._hashList[fileName] === undefined ){
+    fs.readFile( fileName, ( err, fileData ) => {
+      if( !err ){
+        updateCallback( fileData );
+      }
+      else{
+        console.error( "Unable to load dynamic file " + fileName );
+        return null;
+      }
+    });
+  }
+  this._SetupWatch( fileName );
+
 }.bind( dynamic );
 
 exports.reload = function( oldDynamicLoader ){
@@ -488,6 +536,7 @@ exports.reload = function( oldDynamicLoader ){
   this._hashList = oldDynamicLoader._hashList;
   this._dynamicMethodMap = oldDynamicLoader._dynamicMethodMap;
   this._dynamicInstanceMap = oldDynamicLoader._dynamicInstanceMap;
+  this._rawUpdate = oldDynamicLoader._rawUpdate;
   for( var filename in oldDynamicLoader._fileWatchers ){
     oldDynamicLoader._fileWatchers[filename].close();
     if( this._startupPoints[filename] === undefined && filename !== oldDynamicLoader._selfFile ){
