@@ -52,77 +52,77 @@ class DynamicSystem{
   constructor(){
     //****************************PUBLIC VARIABLES**************************//
     /**
-     *
+     * Map of non-dynamic counter parts to dynamic proxies.
      */
     this.dynamicDataMap = {};
 
     //***************************PRIVATE VARIABLES*************************//
     /**
-     *
+     * Map of boolean values to quickly determain if the dynamic is already loaded in memory.
      */
     this._boundDynamics = {};
     /**
-     *
+     * Map of dependencies for a file.
      */
     this._dependList = {};
     /**
-     *
+     * Map of dynamic instances for fast multi instancing.
      */
     this._dynamics = {};
     /**
-     *
+     * Map of the dynamic creation method or "new" traps.
      */
     this._dynamicInstanceMap = {};
     /**
-     *
+     * Map of dynamic methods.
      */
     this._dynamicMethodMap = {};
     /**
-     *
+     * Map of dynamic proxy instances.
      */
     this._dynamicProxyMap = {};
     /**
-     *
+     * Map of flags to require updates for a dynamic instance.
      */
     this._dynamicUpdate = {};
     /**
-     *
+     * @todo Will be used to help determain a files life.
      */
     this._expandedWatchers = {};
     /**
-     *
+     * Map of files that are being watched within a directory.
      */
     this._fileWatchers = {};
     /**
-     *
+     * Map of current hashes for files.
      */
     this._hashList = {};
     /**
-     *
+     * Map of dynamic objects, not classes or methods.
      */
     this._objectDynamics = {};
     /**
-     *
+     * Map of setters for a dynamic object.
      */
     this._objectDynamicsSets = {};
     /**
-     *
+     * Map of files that use the raw update feature.
      */
     this._rawUpdate = {};
     /**
-     *
+     * Path to this file; which is the dynamic system.
      */
     this._selfFile = "";
     /**
-     *
+     * Map of startup points that create a persist dynamic object.
      */
     this._startupPoints = {};
     /**
-     *
+     * Incromenter for unique id tracking.
      */
     this._uidTracker = 0;
     /**
-     *
+     * Map of directories that are currently being watched and files within that are watched.
      */
     this._watchFiles = {};
   }
@@ -174,6 +174,9 @@ class DynamicSystem{
     return this._CreateDynamics(fileName);
   }
 
+  /**
+   * @todo Will be used to watching directories for new files and deleted files and allow acknowlagment of it.
+   */
   DynamicDirectory(){
 
   }
