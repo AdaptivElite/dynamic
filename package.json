@@ -1,11 +1,11 @@
 {
   "name": "dynamicjs",
-  "version": "0.0.4",
+  "version": "1.0.0",
   "descripton": "Dynamic loader for ES6+ JavaScript systems.",
   "main": "dynamic.js",
   "repository": "https://github.com/AdaptivElite/dynamic",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "./node_modules/.bin/mocha tests/globals.js tests/watch.js tests/semantics.js tests/dynamic.js"
   },
   "keywords": [
     "ECMA6",
@@ -16,6 +16,8 @@
   ],
   "author": "AdaptivElite <steven@adaptivelite.com> (http://www.adaptivelite.com)",
   "license": "ISC",
-  "dependencies": {
+  "dependencies": {},
+  "devDependencies": {
+    "mocha": "^3.2.0"
   }
 }

@@ -1,4 +1,4 @@
-# dynamic
+# dynamicjs
 Dynamic loader for ES6+ Javascript systems.
 
 Install
@@ -9,7 +9,9 @@ Use
 ===
 Replaces require with `dynamic` and `superDynamic`.
 * dynamic : Allows the system to load objects or classes with the dynamic system which will reload them on file change in a clean way.
-* superDynamic : Allows the system to use a class as a dependency that can be updated but will not reload existing objects created via the `new` operator. 
+* superDynamic : Allows the system to use a class as a dependency that can be updated but will not reload existing objects created via the `new` operator.
+* dynamicFile : This sets a raw file up for watching, which will help with frequent accessed files via a local cache.
+* dynamicDir : Watches a directory for both JavaScript changes and raw file changes.
 
 Example
 =======
@@ -17,6 +19,7 @@ Example
 let init = require( "dynamicjs" ).initialize( {
   persistentObjectVariable : "inital value"
 });
+require( "dynamicjs" ).makeGlobal();
 
 let dynamicModuleClass = dynamic( "./dynamicModuleName.js" ).ClassDeff;
 init.instance = init.instance || new dynamicModuleClass( { "settings" : "Object" } );
@@ -33,6 +36,13 @@ class myClass extends Object{
 }
 ```
 
+Notes
+=====
+* To replace require make sure to run `require( "dynamicjs" ).makeGlobal();` once.
+* ES6 is required to run.
+* This is for backend only and will not work in browsers.
+
 Road Map
 ========
-Folder watching is a plan however not implemented as of yet.
+* Delete trap needs to be implemented.
+* Memory management; as at the moment memory use of the system is poor at best.
