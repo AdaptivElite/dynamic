@@ -1,5 +1,5 @@
 # dynamicjs
-Dynamic loader for ES6+ Javascript systems.
+Dynamic loader for NodeJS servers or programs. Accelerate development by only having to turn your head.
 
 ### Install
 `npm install dynamicjs`
@@ -9,18 +9,17 @@ Replaces require with `dynamic` and `superDynamic`.
 * dynamic : Allows the system to load objects or classes with the dynamic system which will reload them on file change in a clean way.
 * superDynamic : Allows the system to use a class as a dependency that can be updated but will not reload existing objects created via the `new` operator.
 * dynamicFile : This sets a raw file up for watching, which will help with frequent accessed files via a local cache.
-* dynamicDir : Watches a directory for both JavaScript changes and raw file changes.
-* dynamicCaller : Useful for knowing a files callee; can be used for debugging and is only a utility method.
+* dynamicDirectory : Watches a directory for both source changes and raw file changes. This feature is still in flux and will change.
 
 ### Example
 ```
-let init = require( "dynamicjs" ).initialize( {
+const init = require( "dynamicjs" ).initialize( {
   persistentObjectVariable : "inital value"
 });
-require( "dynamicjs" ).makeGlobal();
-
-let dynamicModuleClass = dynamic( "./dynamicModuleName.js" ).ClassDeff;
-init.instance = init.instance || new dynamicModuleClass( { "settings" : "Object" } );
+require( "dynamicjs" ).globalSyntax();
+require( "dynamicjs" ).bypass = process.env.NODE_ENV === "production";
+const { ClassDeff } = dynamic( "./dynamicModuleName.js" );
+init.instance = init.instance || new ClassDeff( { "settings" : "Object" } );
 ```
 
 ### Preparations
@@ -35,10 +34,10 @@ class myClass extends Object{
 This only has to be on the root of an objects inheritance chain.
 
 ### Notes
-* To replace require make sure to run `require( "dynamicjs" ).makeGlobal();` once.
-* ES6 is required to run.
-* This is for backend only and will not work in browsers.
+* To use dynamic without a require statement each time make sure to run `require( "dynamicjs" ).globalSyntax();` once.
+* This is for backend only and will not work in browsers. For browsers use a HMR.
+* Minimum nodejs version 10.x
 
 ### Road Map
 * Delete trap needs to be implemented.
-* Memory management; as at the moment memory use of the system is poor at best.
+* Memory management; as at the moment memory use of the system is poor at best and only sutied for a development a test environment.

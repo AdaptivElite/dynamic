@@ -6,6 +6,7 @@ TODO: Dynamic clean-up via delete trap
 const crypto = require( "crypto" );
 const fs = require( "fs" );
 const path = require( "path" );
+const chokidar = require('chokidar');
 
 /**
  * Class that is injected as a replacement of the object extention, returns Proxy rather then instance of DynamicReflection.
@@ -18,14 +19,14 @@ class DynamicReflection{
   constructor(){
     let dynamicInstance = new.target();
     let context = Reflect.construct( Object, [], dynamicInstance.initialDynamic );
-    if( dynamic.dynamicDataMap[dynamicInstance.fileName][dynamicInstance.dynamicName][dynamicInstance.dynamic] !== undefined ){
-      let priorContext = dynamic.dynamicDataMap[dynamicInstance.fileName][dynamicInstance.dynamicName][dynamicInstance.dynamic];
+    if( dynamicSystem.dynamicDataMap[dynamicInstance.fileName][dynamicInstance.dynamicName][dynamicInstance.dynamic] !== undefined ){
+      let priorContext = dynamicSystem.dynamicDataMap[dynamicInstance.fileName][dynamicInstance.dynamicName][dynamicInstance.dynamic];
       for( let property in priorContext ){
         context[property] = priorContext[property];
       }
     }
-    dynamic.dynamicDataMap[dynamicInstance.fileName][dynamicInstance.dynamicName][dynamicInstance.dynamic] = context;
-    return dynamic.GenerateProxy( context, dynamicInstance.dynamic, dynamicInstance.fileName, dynamicInstance.dynamicName );
+    dynamicSystem.dynamicDataMap[dynamicInstance.fileName][dynamicInstance.dynamicName][dynamicInstance.dynamic] = context;
+    return dynamicSystem.generateProxy( context, dynamicInstance.dynamic, dynamicInstance.fileName, dynamicInstance.dynamicName );
   }
 }
 
@@ -55,12 +56,20 @@ class DynamicSystem{
      * Map of non-dynamic counter parts to dynamic proxies.
      */
     this.dynamicDataMap = {};
+    /**
+     * Set to true to have the dynamic and superDynamic calls bypass the hot reload system. Good for production systems.
+     */
+    this.bypass = false;
 
     //***************************PRIVATE VARIABLES*************************//
     /**
      * Map of boolean values to quickly determain if the dynamic is already loaded in memory.
      */
     this._boundDynamics = {};
+    /**
+     * Prevent file writes from happening when the filesystem triggers more then one event for filewrite.
+     */
+    this._debounce = {};
     /**
      * Map of dependencies for a file.
      */
@@ -134,7 +143,12 @@ class DynamicSystem{
    * @param depth - How deep back the stack trace will go to find the callee file.
    * @returns File name of the callee.
    */
-  Caller( depth ) {
+  caller( depth ) {
+
+    if( depth !== null && typeof( depth ) === "string" ){
+      return depth;
+    }
+    
     let pst, stack, file, frame;
 
     pst = Error.prepareStackTrace;
@@ -161,24 +175,50 @@ class DynamicSystem{
    * @param [caller] - File that called the require optionally overrided for dependency resolution.
    * @returns Required file with dynamic bindings attached, should act just like using require with all the buffs dynamic adds.
    */
-  Dynamic( fileName, caller = null ){
-    if( !fileName.endsWith( ".js" ) ){
-      fileName = fileName + ".js";
-    }
-    caller = caller || this.Caller();
-    if( !path.isAbsolute( fileName ) ){
-      fileName = path.resolve( path.dirname( caller ), fileName );
-    }
-    this._AddDependent( fileName, caller );
+  dynamic( fileName, caller = null ){
+    caller = this.caller( caller );
+    fileName = require.resolve( fileName, { paths: [ path.dirname( caller ) ] } );
+    this._addDependent( fileName, caller );
 
-    return this._CreateDynamics(fileName);
+    return this._createDynamics(fileName);
   }
 
   /**
-   * @todo Will be used to watching directories for new files and deleted files and allow acknowlagment of it.
+   * Used to watching directories for new files and deleted files and allow acknowlagment of it.
+   * @param directory - Directory to perform operation on.
+   * @param options - Options for how to filter and deal with the files.
+   *  @param filter - The filter to be used accepting * as wild card.
+   *  @param includeSubDirectories - Should subdirectoies be watched?
+   *  @param dynamicType - How to deal with the file.
+   *    @option source - Use dynamic to include the files.
+   *    @option super - Use superDynamic to include the files.
+   *    @option raw - Only return raw file buffer.
+   *    @option text - Return a encoded string of the raw file buffer.
+   * @param predicate - The predicate called on updates to the files.
+   * @note feature still in testing, and is unstable.
    */
-  DynamicDirectory(){
-
+  async dynamicDirectory( directory, options, predicate, caller = null ){
+    caller = this.caller(caller);
+    options.filter = options.filter || "*";
+    options.includeSubDirectories = options.includeSubDirectories || false;
+    let dynamicFiles = await this._walkDirectory( path.join( path.dirname( caller ), directory ), options.filter, options.includeSubDirectories );
+    for( let i = 0; i < dynamicFiles.files.length; i++ ){
+      let dynamicLinks = null;
+      switch( options.dynamicType ){
+        case "source":
+          dynamicLinks = this.dynamic( "./" + path.join( directory, dynamicFiles.files[i].directory, dynamicFiles.files[i].name ), caller );
+          Object.keys( dynamicLinks ).filter( dynamicLink => dynamicLink !== "__dynamicLoader" ).forEach( dynamicLink => predicate( dynamicLink, dynamicLinks[dynamicLink], dynamicFiles.files[i], "add" ) );
+          break;
+        case "super":
+          dynamicLinks = this.superDynamic( path.join( dynamicFiles.files[i].directory, dynamicFiles.files[i].name ), caller );
+          Object.keys( dynamicLinks ).filter( dynamicLink => dynamicLink !== "__dynamicLoader" ).forEach( dynamicLink => predicate( dynamicLink, dynamicLinks[dynamicLink], dynamicFiles.files[i], "add" ) );
+          break;
+        case "raw":
+          break;
+        case "text":
+          break;
+      }
+    }
   }
 
   /**
@@ -189,15 +229,15 @@ class DynamicSystem{
    * @param [caller] - File that called the require optionally overrided for dependency resolution.
    * @returns Promise which resolve to the file data or rejection with file load error.
    */
-  DynamicFile( fileName, updateCallback, updateDependent = false, caller = null ){
+  dynamicFile( fileName, updateCallback, updateDependent = false, caller = null ){
     return new Promise( ( resolve, reject ) => {
       let initResolve = false;
-      caller = caller || this.Caller();
+      caller = this.caller(caller);
       if( !path.isAbsolute( fileName ) ){
         fileName = path.resolve( path.dirname( caller ), fileName );
       }
       if( updateDependent ){
-        this._AddDependent( fileName, caller );
+        this._addDependent( fileName, caller );
       }
 
       this._rawUpdate[fileName] = updateCallback;
@@ -220,10 +260,10 @@ class DynamicSystem{
             else{
               console.error( "Unable to update dynamic file " + fileName );
             }
-          }
+          } 
         });
       }
-      this._SetupWatch( fileName );
+      this._setupWatch( fileName );
     });
   }
 
@@ -235,31 +275,36 @@ class DynamicSystem{
    * @param dynamicName - Orignal name of object prior to dynamic binding.
    * @returns Proxy object that directs requests to appropreate dynamic object.
    */
-  GenerateProxy( context, dynamicId, fileName, dynamicName ){
-    if( dynamic._dynamicProxyMap[fileName][dynamicName][dynamicId] === undefined ){
-      dynamic._dynamicProxyMap[fileName][dynamicName][dynamicId] = new Proxy( context, {
-        get( target, key ){
-          return dynamic.dynamicDataMap[fileName][dynamicName][dynamicId][key];
+  generateProxy( context, dynamicId, fileName, dynamicName ){
+    if( this._dynamicProxyMap[fileName][dynamicName][dynamicId] === undefined ){
+      this._dynamicProxyMap[fileName][dynamicName][dynamicId] = new Proxy( context, {
+        get: ( target, key ) => {
+          return this.dynamicDataMap[fileName][dynamicName][dynamicId][key];
         },
-        set( target, key, value ){
-          dynamic.dynamicDataMap[fileName][dynamicName][dynamicId][key] = value;
+        set: ( target, key, value ) => {
+          this.dynamicDataMap[fileName][dynamicName][dynamicId][key] = value;
           target[key] = value;
           return true;
+        },
+        ownKeys: (_) => {
+          return [
+            ...Object.getOwnPropertyNames(this.dynamicDataMap[fileName][dynamicName][dynamicId]),
+            ...Object.getOwnPropertyNames(this._dynamicMethodMap[fileName][dynamicName].__original.prototype),
+          ];
         }
       });
     }
-    return dynamic._dynamicProxyMap[fileName][dynamicName][dynamicId];
+    return this._dynamicProxyMap[fileName][dynamicName][dynamicId];
   }
 
   /**
    * Attaches dynamic system to global conext.
    */
-  GlobalSyntax(){
-    global.dynamic = this.Dynamic.bind( this );
-    global.superDynamic = this.SuperDynamic.bind( this );
-    global.dynamicCaller = this.Caller.bind( this );
-    global.dynamicFile = this.DynamicFile.bind( this );
-    global.dynamicDir = this.DynamicDirectory.bind( this );
+  globalSyntax(){
+    global.dynamic = this.dynamic.bind( this );
+    global.superDynamic = this.superDynamic.bind( this );
+    global.dynamicFile = this.dynamicFile.bind( this );
+    global.dynamicDirectory = this.dynamicDirectory.bind( this );
   }
 
   /**
@@ -268,12 +313,12 @@ class DynamicSystem{
    * @param destroyMethod - Teardown method done prior to new version of persist object being constructed.
    * @returns Instance of persistObject that was passed into the method but with dynamic binding.
    */
-  Initialize( persistObject, destroyMethod ){
-    let initializeFile = this.Caller();
+  initialize( persistObject, destroyMethod ){
+    let initializeFile = this.caller( null );
     destroyMethod = destroyMethod || function(){};
     if( this._startupPoints[initializeFile] === undefined ){
-      dynamic._SetStartup( initializeFile, destroyMethod, persistObject );
-      dynamic._SetSelf( __filename );
+      this._setStartup( initializeFile, destroyMethod, persistObject );
+      this._setSelf( __filename );
     }
     else{
       if( this._startupPoints[initializeFile] !== undefined ){
@@ -286,30 +331,28 @@ class DynamicSystem{
       }
     }
 
-    return persistObject;
+    return this._createDynamic( initializeFile, "init", persistObject );
   }
 
   /**
    * Action that is called when the dynamic system has been updated.
    * @param oldDynamicLoader - The current running version of the dynamic system to copy data tables from.
    */
-  Reload( oldDynamicLoader ){
+  reload( oldDynamicLoader ){
     this._dynamics = oldDynamicLoader._dynamics;
     this._boundDynamics = oldDynamicLoader._boundDynamics;
     for( let startup in oldDynamicLoader._startupPoints ){
-      this._SetStartup( startup, oldDynamicLoader._startupPoints[startup].destroy, oldDynamicLoader._startupPoints[startup].persist );
+      this._setStartup( startup, oldDynamicLoader._startupPoints[startup].destroy, oldDynamicLoader._startupPoints[startup].persist );
     }
-    this._SetSelf( __filename ); //Todo if moved clear old file watcher.
+    this._setSelf( __filename ); //Todo if moved clear old file watcher.
     this._dependList = oldDynamicLoader._dependList;
     this._hashList = oldDynamicLoader._hashList;
     this._dynamicMethodMap = oldDynamicLoader._dynamicMethodMap;
     this._dynamicInstanceMap = oldDynamicLoader._dynamicInstanceMap;
     this._rawUpdate = oldDynamicLoader._rawUpdate;
-    for( let filename in oldDynamicLoader._fileWatchers ){
-      oldDynamicLoader._fileWatchers[filename].close();
-      if( this._startupPoints[filename] === undefined && filename !== oldDynamicLoader._selfFile ){
-        this._CreateDynamics( filename );
-      }
+    for( let dirName in oldDynamicLoader._fileWatchers ){
+      oldDynamicLoader._fileWatchers[dirName].close();
+      this._watchDir( dirName );
     }
   }
 
@@ -319,17 +362,12 @@ class DynamicSystem{
    * @param [caller] - File that called the require optionally overrided for dependency resolution.
    * @returns Required file without dynamic bindings.
    */
-  SuperDynamic( fileName, caller = null ){
-    if( !fileName.endsWith( ".js" ) ){
-      fileName = fileName + ".js";
-    }
-    caller = caller || this.Caller();
-    if( !path.isAbsolute( fileName ) ){
-      fileName = path.resolve( path.dirname( caller ), fileName );
-    }
-    this._AddDependent( fileName, caller );
-
-    return this._BindDynamics(fileName);
+  superDynamic( fileName, caller = null ){
+    caller = this.caller(caller);
+    fileName = require.resolve( fileName, { paths: [ path.dirname( caller ) ] } );
+    
+    this._addDependent( fileName, caller );
+    return this._bindDynamics(fileName);
   }
 
   //***************************PRIVATE METHODS*************************//
@@ -339,7 +377,7 @@ class DynamicSystem{
    * @param fileName - Name of the file marked as dependent.
    * @param caller - Calling file for the dependent to trace changes of to.
    */
-  _AddDependent( fileName, caller ){
+  _addDependent( fileName, caller ){
     if( caller !== null ){
       if( this._dependList[fileName] === undefined ){
         this._dependList[fileName] = [];
@@ -356,11 +394,11 @@ class DynamicSystem{
    * @param fileName - Name of the file to bind dynamics to.
    * @returns Exports from the file bound to the dynamic system.
    */
-  _BindDynamics( fileName ){
+  _bindDynamics( fileName ){
     if( this._boundDynamics[fileName] === undefined ){
       this._boundDynamics[fileName] = true;
     }
-    return this._CreateDynamics( fileName );
+    return this._createDynamics( fileName );
   }
 
   /**
@@ -368,7 +406,7 @@ class DynamicSystem{
    * @param filePath - Path of the file in the require cache. Must already be sanitized.
    * @returns Pre-reloaded cached version that can be loaded for errors.
    */
-  _ClearRequireCache( filePath ){
+  _clearRequireCache( filePath ){
     let oldCache = null;
     if( require.cache[filePath] !== undefined ){
       oldCache = require.cache[filePath];
@@ -387,23 +425,23 @@ class DynamicSystem{
    * @returns Exports with dynamics created and bound to the objects/functions/classes.
    * @todo Memory clean up for non existing parts of the application.
    */
-  _CreateDynamics( fileName ){
+  _createDynamics( fileName ){
     if( this._dynamics[fileName] === undefined || this._dynamicUpdate[fileName] === true ){
       this._dynamicUpdate[fileName] = false;
       let initialDynamics = require( fileName );
-      this._SetupWatch( fileName );
+      this._setupWatch( fileName );
 
       if( this._dynamics[fileName] === undefined ){
         this._dynamics[fileName] = {};
       }
 
       for( let exportData in initialDynamics ){
-        this._dynamics[fileName][exportData] = this._CreateDynamic( fileName, exportData, initialDynamics[exportData] );
+        this._dynamics[fileName][exportData] = this._createDynamic( fileName, exportData, initialDynamics[exportData] );
       }
 
       for( let excludedData in this._dynamics ){
         //TODO clean-up parts of the application that no longer exist.
-        //convertedStructure[exportData] = this._CreateDynamic( initialDynamics[exportData] );
+        //convertedStructure[exportData] = this._createDynamic( initialDynamics[exportData] );
       }
 
       //Update the dynamic loader
@@ -412,7 +450,7 @@ class DynamicSystem{
       return this._dynamics[fileName];
     }
     else{
-      this._SetupWatch( fileName );
+      this._setupWatch( fileName );
     }
 
     return this._dynamics[fileName];
@@ -426,17 +464,17 @@ class DynamicSystem{
    * @param initialDynamic - Required function, class, or object prototype to create without dynamics.
    * @returns Bound version of function, object, or class.
    */
-  _CreateDynamic( fileName, dynamicName, initialDynamic ){
+  _createDynamic( fileName, dynamicName, initialDynamic ){
     if( initialDynamic instanceof Function && !this._boundDynamics[fileName] ){
       if( this._dynamicMethodMap[fileName] === undefined || this._dynamicMethodMap[fileName][dynamicName] === undefined ){
-        return this._NewDynamicMethod( fileName, dynamicName, initialDynamic );
+        return this._newDynamicMethod( fileName, dynamicName, initialDynamic );
       }
       else{
-        return this._UpdateDynamicMethod( fileName, dynamicName, initialDynamic );
+        return this._updateDynamicMethod( fileName, dynamicName, initialDynamic );
       }
     }
     else if( initialDynamic instanceof Object && !this._boundDynamics[fileName] ){
-      return this._CreateObjectDynamics( fileName, dynamicName, initialDynamic );
+      return this._createObjectDynamics( fileName, dynamicName, initialDynamic );
     }
 
     return initialDynamic;
@@ -449,7 +487,7 @@ class DynamicSystem{
    * @param dynamicObject - Non-dynamic version of the object that will be bound.
    * @returns Proxy of the Non-dynamic object with needed traps to redirect i/o.
    */
-  _CreateObjectDynamics( fileName, dynamicName, dynamicObject ){
+  _createObjectDynamics( fileName, dynamicName, dynamicObject ){
     if( this._objectDynamics[fileName] === undefined ){
       this._objectDynamics[fileName] = {};
       this._objectDynamicsSets[fileName] = {};
@@ -463,13 +501,13 @@ class DynamicSystem{
       }
     }
 
-    return new Proxy( {}, {
-      get( target, key ){
-        return dynamic._objectDynamics[fileName][dynamicName][key];
+    return new Proxy( dynamicObject, {
+      get: ( _, key ) => {
+        return this._objectDynamics[fileName][dynamicName][key];
       },
-      set( target, key, value ){
+      set: ( target, key, value ) => {
         this._objectDynamicsSets[fileName][dynamicName][key] = value;
-        dynamic._objectDynamics[fileName][dynamicName][key] = value;
+        this._objectDynamics[fileName][dynamicName][key] = value;
         target[key] = value;
         return true;
       }
@@ -481,14 +519,14 @@ class DynamicSystem{
    * @param startingClass - Prototype that will be searched down for low prototype.
    * @returns Lowest prototype inside inheritance chain that is not an Object.
    */
-  _GetDeepPrototype( startingClass ){
+  _getDeepPrototype( startingClass ){
     let prototype = Object.getPrototypeOf( startingClass );
     if( prototype === Object ){
       return startingClass;
     }
     else{
       if( prototype.prototype !== undefined ){
-        return this._GetDeepPrototype( prototype );
+        return this._getDeepPrototype( prototype );
       }
       else{
         return startingClass;
@@ -501,20 +539,23 @@ class DynamicSystem{
    * @param fileName - Name of the file to get the current md5 checksum for.
    * @param callback - Method to callback with error if any and checksum of file.
    */
-  _GetHash( fileName, callback ){
-    let hash = crypto.createHash('md5');
-    hash.setEncoding('hex');
-    fs.readFile( fileName, ( error, data ) => {
-      if( !error ){
-        hash.write( data );
-        hash.end();
-        callback( null, hash.read() );
-      }
-      else{
-        console.error( "Hash error with " + fileName );
-        callback( error, null );
-      }
-    } );
+  _getHash( fileName ){
+    return new Promise( ( resolve, reject ) => {
+      let hash = crypto.createHash('md5');
+      hash.setEncoding('hex');
+      fs.readFile( fileName, ( error, data ) => {
+        if( !error ){
+          hash.write( data );
+          hash.end();
+          resolve( hash.read() );
+        }
+        else{
+          console.error( "Hash error with " + fileName );
+          console.error( error );
+          reject( error ); 
+        }
+      } );
+    });
 
   }
 
@@ -525,14 +566,13 @@ class DynamicSystem{
    * @param initialDynamic - Prototype of the first file load of the class.
    * @returns Dynamic version of method prototype that can be created via "new".
    */
-  _NewDynamicMethod( fileName, dynamicName, initialDynamic ){
-
+  _newDynamicMethod( fileName, dynamicName, initialDynamic ){
+    let dynamic = this;
     let dynamicMethod = null;
     //Magic method that is a wraper for the orignal method.
     dynamicMethod = function(){
-
       //If we are rebuilding the object then make sure we copy it first//
-      let dynamicId = dynamic._UniqueNumber();
+      let dynamicId = dynamic._uniqueNumber();
       let priorArgs = arguments;
       let surrogateProxy = function(){
         return {
@@ -542,7 +582,7 @@ class DynamicSystem{
           initialDynamic : initialDynamic
         };
       };
-      dynamic._ReplaceDeepPrototype( initialDynamic );
+      dynamic._replaceDeepPrototype( initialDynamic );
       let proxyInstance = null;
       try{
         proxyInstance = Reflect.construct( initialDynamic, priorArgs, surrogateProxy );
@@ -557,9 +597,10 @@ class DynamicSystem{
         let oldInitialDynamic = initialDynamic;
         initialDynamic = nextInitialDynamic;
         try{
-          dynamicMethod.prototype.__original = initialDynamic;
-          dynamic._ReplaceDeepPrototype( initialDynamic );
+          dynamicMethod.__original = initialDynamic;
+          dynamic._replaceDeepPrototype( initialDynamic );
           let newProxy = Reflect.construct( initialDynamic, priorArgs, surrogateProxy );
+          dynamicMethod.__dynamicLoadMethod();
         }
         catch( ex ){
           console.error( "Unable to load dynamic class, a placeholder was used for requested instance." );
@@ -571,10 +612,26 @@ class DynamicSystem{
       }
 
       dynamic._dynamicInstanceMap[fileName][dynamicName][this.__dynamicId] = this;
+      setTimeout( () => dynamicMethod.__dynamicLoadMethod() );
       return proxyInstance;
     };
 
-    dynamicMethod.prototype.__original = initialDynamic;
+    dynamicMethod.__dynamicLoadMethod = () => {};
+    dynamicMethod.dynamicLoad = ( loadMethod ) => {
+      dynamicMethod.__dynamicLoadMethod = loadMethod;
+    }
+    dynamicMethod.dynamicUnload = function( unloadMethod ){
+      
+    }
+    dynamicMethod.instanceof = function( prototype ){
+      return dynamicMethod.__original.prototype instanceof prototype
+    }
+
+    dynamicMethod.toString = () => {
+      return dynamicMethod.__original.toString();
+    }
+
+    dynamicMethod.__original = initialDynamic;
 
     //Make sure mapping exists
     if( this._dynamicMethodMap[fileName] === undefined ){
@@ -599,9 +656,10 @@ class DynamicSystem{
    * @param filePath - Path of the file that changed, must be sanitized.
    * @param callback - Callback when the file is loaded which can include errors.
    */
-  _ReloadFile( trigger, filePath, callback ){
-    this._GetHash( filePath, ( error, changeHash ) => {
-      if( !error && changeHash !== this._hashList[filePath] ){
+  async _reloadFile( trigger, filePath, callback ){
+    try{
+      let changeHash = await this._getHash( filePath );
+      if( changeHash !== this._hashList[filePath] ){
         if( this._rawUpdate[filePath] !== undefined ){
           fs.readFile( filePath, ( err, fileData ) => {
             if( !err ){
@@ -614,56 +672,62 @@ class DynamicSystem{
         }
         else{
           this._dynamicUpdate[filePath] = true;
-          this._ReloadPath( filePath );
+          this._reloadPath( filePath );
         }
         this._hashList[filePath] = changeHash;
-        callback( null );
-        this._ResolveDependencies( filePath );
+        setTimeout( () => {
+          this._resolveDependencies( filePath );
+        });
       }
-      else{
-        callback( error );
-      }
-
-    });
-
+    }
+    catch( ex ){
+      /* Throw away */
+    }
   }
 
   /**
    * Reload trigger for full path changes.
    * @param filePath - Path that triggered a reload.
    */
-  _ReloadPath( filePath ){
+  _reloadPath( filePath ){
     let oldCache = null;
-    if( this._startupPoints[filePath] === undefined && filePath != this._selfFile ){
-      try{
-        oldCache = this._ClearRequireCache( filePath );
-        this._CreateDynamics( filePath );
-      }
-      catch( ex ){
-        this._RestoreRequireCache( filePath, oldCache, ex );
-      }
-    }
-    else{
-      if( this._startupPoints[filePath] !== undefined ){
+    if( !this._debounce[filePath] ){
+      this._debounce[filePath] = true;
+      if( this._startupPoints[filePath] === undefined && filePath != this._selfFile ){
         try{
-          //Dynamic loader re-include startup script.
-          oldCache = this._ClearRequireCache( filePath );
-          require( filePath );
+          oldCache = this._clearRequireCache( filePath );
+          this._createDynamics( filePath );
         }
         catch( ex ){
-          this._RestoreRequireCache( filePath, oldCache, ex );
+          this._restoreRequireCache( filePath, oldCache, ex );
         }
       }
-      else {
-        try{
-          //Dynamic loader reload system
-          oldCache = this._ClearRequireCache( this._selfFile );
-          require( __filename ).reload( this );
+      else{
+        if( this._startupPoints[filePath] !== undefined ){
+          try{
+            //Dynamic loader re-include startup script.
+            oldCache = this._clearRequireCache( filePath );
+            require( filePath );
+          }
+          catch( ex ){
+            this._restoreRequireCache( filePath, oldCache, ex );
+          }
         }
-        catch( ex ){
-          this._RestoreRequireCache( filePath, oldCache, ex );
+        else {
+          try{
+            //Dynamic loader reload system
+            oldCache = this._clearRequireCache( this._selfFile );
+            require( __filename ).reload( this );
+          }
+          catch( ex ){
+            this._restoreRequireCache( filePath, oldCache, ex );
+          }
         }
       }
+      
+      setTimeout( () => {
+        this._debounce[filePath] = false;
+      }, 50 );
     }
   }
 
@@ -671,8 +735,8 @@ class DynamicSystem{
    * Replaces the low layer object prototype with DynamicReflection class to make dynamics work.
    * @param startingClass - Prototype that has a deep class to replace.
    */
-  _ReplaceDeepPrototype( startingClass ){
-    let deepPrototype = this._GetDeepPrototype( startingClass );
+  _replaceDeepPrototype( startingClass ){
+    let deepPrototype = this._getDeepPrototype( startingClass );
     if( deepPrototype instanceof Object ){
       if( deepPrototype !== DynamicReflection ){
         Object.setPrototypeOf( deepPrototype, DynamicReflection );
@@ -688,11 +752,11 @@ class DynamicSystem{
    * Resolves the dependency tree for a given file path, and issues reloads.
    * @param filePath - File path to do a dependency trace on.
    */
-  _ResolveDependencies( filePath ){
+  _resolveDependencies( filePath ){
     if( this._dependList[filePath] !== undefined ){
       for( let i = 0; i < this._dependList[filePath].length; i++ ){
         this._dynamicUpdate[this._dependList[filePath][i]] = true;
-        this._ReloadPath( this._dependList[filePath][i] );
+        this._reloadPath( this._dependList[filePath][i] );
       }
     }
   }
@@ -703,7 +767,7 @@ class DynamicSystem{
    * @param oldCache - Old cache that will be restored as the current running dynamic object.
    * @param exception - Exception that triggered the file to be unable to compile/instance.
    */
-  _RestoreRequireCache( filePath, oldCache, exception ){
+  _restoreRequireCache( filePath, oldCache, exception ){
     if( oldCache !== null ){
       console.error( "Unable to rebuild cache object, " + filePath );
       console.error( exception );
@@ -724,10 +788,12 @@ class DynamicSystem{
    * @param dynamicLoaderPath - Path of the dynamic loader that just loaded and instanced this very class.
    * @todo Because the dynamic system needs to work in a singleton pattern a check needs to take place to prevent multi instanced versions.
    */
-  _SetSelf( dynamicLoaderPath ){
+  _setSelf( dynamicLoaderPath ){
     //TODO check if npm sub requirements setup two locations for dynamic.
     this._selfFile = path.resolve( dynamicLoaderPath );
-    this._SetupWatch( this._selfFile );
+    this._setupWatch( this._selfFile );
+
+
   }
 
   /**
@@ -736,29 +802,32 @@ class DynamicSystem{
    * @param destroyMethod - Method called when the inital file is reloaded.
    * @param persistObject - A collection of data in an object that will persist if able after reloads.
    */
-  _SetStartup( initialFile, destroyMethod, persistObject ){
+  _setStartup( initialFile, destroyMethod, persistObject ){
     this._startupPoints[initialFile] = {
       destroy : destroyMethod,
       persist : persistObject
     };
-    this._SetupWatch( initialFile );
+    this._setupWatch( initialFile );
   }
 
   /**
    * Starts a file watch for a file by making sure the directory is watched and adding the file into the list of file for that directory.
    * @param fileName - Name of the file to add to the watch list.
    */
-  _SetupWatch( fileName ){
+  async _setupWatch( fileName ){
     if( this._watchFiles[path.dirname( fileName )] === undefined ){
-      this._WatchDir( path.dirname( fileName ) );
+      this._watchDir( path.dirname( fileName ) );
     }
     if( this._watchFiles[path.dirname( fileName )][path.basename( fileName )] === undefined ){
       this._watchFiles[path.dirname( fileName )][path.basename( fileName )] = false;
-      this._GetHash( fileName, ( error, hash ) => {
-        if( !error ){
-          this._hashList[fileName] = hash;
-        }
-      } );
+      try{
+        let hash = await this._getHash( fileName );
+        this._hashList[fileName] = hash;
+      }
+      catch( error ){
+        /* Throw away */
+      }
+      
     }
   }
 
@@ -767,7 +836,7 @@ class DynamicSystem{
    * @returns Next unique id.
    * @todo Currently this will break after long term use because it does not reset, and rather then reseting it a new approch is needed to make it consistant.
    */
-  _UniqueNumber(){
+  _uniqueNumber(){
     return this._uidTracker++;
   }
 
@@ -778,13 +847,67 @@ class DynamicSystem{
    * @param initialDynamic - Non dynamic version of current build vs. last build. Used to map one instanced to another.
    * @returns Rebuild dynamic bound object.
    */
-  _UpdateDynamicMethod( fileName, dynamicName, initialDynamic ){
+  _updateDynamicMethod( fileName, dynamicName, initialDynamic ){
     //Deal with object reconstructing.
     for( let dynamicId in this._dynamicInstanceMap[fileName][dynamicName] ){
       this._dynamicInstanceMap[fileName][dynamicName][dynamicId].__rebuild( initialDynamic );
     }
 
     return this._dynamicMethodMap[fileName][dynamicName];
+  }
+
+  async _walkDirectory( directory, filter, includeSubDirectories = false ){
+    if( !directory.endsWith( "/" ) ){
+      directory = directory + "/";
+    }
+    let fullFilesList = await this._walk( directory, includeSubDirectories );
+    filter = new RegExp( "^" + filter.replace( /\./gi, "\\.").replace( /\*/gi, ".*" ) + "$" );
+    fullFilesList.forEach( file => {
+      file.absolutePath = path.join( file.directory, file.name );
+      file.directory = file.directory.replace( directory, "./" );
+    });
+    
+    return {
+      directories: fullFilesList.filter( ( file ) => file.isDirectory() ).map( directory => ( {
+        absolutePath: directory.absolutePath,
+        directory: directory.directory,
+        name: directory.name
+      } )),
+      files: fullFilesList.filter( ( file ) => file.isFile() && filter.test( file.name ) ).map( file => ( {
+        absolutePath: file.absolutePath,
+        directory: file.directory,
+        name: file.name
+      } ))
+    };
+
+  }
+
+  _walk( directory, includeSubDirectories ){
+    return new Promise( ( resolve, reject ) => {
+      fs.readdir(directory, { withFileTypes: true }, async (err, list) => {
+        if (err) return reject(err);
+        let results = [];
+        for( let i = 0; i < list.length; i++ ){
+          list[i].directory = directory;
+          if( list[i].isDirectory() && includeSubDirectories ){
+            results.push( list[i] );
+            results = [ ...results, ...await this._walk( path.join( directory, list[i].name ), true ) ];
+          }
+          else if( list[i].isFile() ){
+            results.push( list[i] );
+          }
+        }
+
+        resolve( results );
+      } );
+    });
+    
+  }
+
+  _wait( delay ){
+    return new Promise( ( resolve ) => {
+      setTimeout( resolve, delay );
+    });
   }
 
   /**
@@ -794,33 +917,113 @@ class DynamicSystem{
    * @note Known program issues with: VIM, WebStorm
    * @todo Deal with logic for added and removed files from directories.
    */
-  _WatchDir( dirname ){
-    if( this._fileWatchers[dirname] !== undefined ){
+  _watchDir( dirname, watchHook = null ){
+    if( this.bypass ){
+      if( this._fileWatchers[dirname] === undefined ){
+        this._watchFiles[dirname] = {};
+      }
       return;
     }
-    this._watchFiles[dirname] = {};
-    try{
-      this._fileWatchers[dirname] = fs.watch( dirname, ( e, eFileName ) => {
-        if( this._expandedWatchers[dirname] !== undefined ){
-          //@TODO Allow new and deleted files//
-        }
-        if( this._watchFiles[dirname][eFileName] === false ){
-          this._watchFiles[dirname][eFileName] = true;
-          this._ReloadFile( e, path.normalize( dirname + "/" + eFileName ), ( ) => {
-            this._watchFiles[dirname][eFileName] = false;
-          } );
-          if( e === "rename" ){
-            //@TODO Check to see if it is a new file
+    if( this._fileWatchers[dirname] === undefined ){
+      this._watchFiles[dirname] = {};
+      try{
+        const newWatcher = chokidar.watch( dirname, {
+          persistent: true,
+          alwaysStat: false,
+          ignoreInitial: true,
+          depth : 0
+        } );
 
-            //@TODO Check to see if it still exists
+        let renameHook = null;
 
-            //@TODO Figure out how to do a real rename
+        const watchEventMethod = async ( event, fileName, originalFile ) => {
+          fileName = path.basename( fileName );
+
+          //File rename hooks
+          //@todo fix rename
+          /*if( event === "change" && renameHook === null ){
+            renameHook = { original: fileName };
+            await this._wait( 150 );
+            if( renameHook.new && renameHook.released ){
+              return;
+            }
+            else{
+              renameHook = null;
+            }
+          }
+          else if( event === "add" && renameHook !== null ){
+            renameHook.new = fileName;
+            await this._wait( 100 );
+            if( renameHook.new && renameHook.released ){
+              return;
+            }
+          }
+          else if( event === "unlink" && renameHook !== null ){
+            renameHook.released = true;
+            await this._wait( 50 );
+            let innerHook = renameHook;
+            renameHook = null;
+            watchEventMethod( "rename", innerHook.new, innerHook.original );
+            return;
+          }
+          //Folder rename hooks
+          if( event === "unlinkDir" && renameHook === null ){
+            renameHook = { original: fileName };
+            await this._wait( 150 );
+            if( renameHook.new && renameHook.released ){
+              return;
+            }
+            else{
+              renameHook = null;
+            }
+          }
+          else if( event === "addDir" && renameHook === null ){
+            renameHook.new = fileName;
+            renameHook.released = true;
+            await this._wait( 50 );
+            let innerHook = renameHook;
+            renameHook = null;
+            watchEventMethod( "renameDir", innerHook.new, innerHook.original );
+            return;
+          }*/
+
+          if( this._expandedWatchers[dirname] !== undefined ){
+            //@TODO Allow new and deleted files//
+          }
+          if( this._watchFiles[dirname][fileName] === false ){
+            this._watchFiles[dirname][fileName] = true;
+            await this._reloadFile( event, path.normalize( dirname + "/" + fileName ) );
+            this._watchFiles[dirname][fileName] = false;
+            if( event === "rename" ){
+              //@TODO Check to see if it is a new file
+
+              //@TODO Check to see if it still exists
+
+              //@TODO Figure out how to do a real rename
+            }
           }
         }
-      } );
+        
+        newWatcher
+        .on( 'add', ( fileName ) => watchEventMethod( 'add', fileName ) )
+        .on( 'change', ( fileName ) => watchEventMethod( 'change', fileName ) )
+        .on( 'unlink', ( fileName ) => watchEventMethod( 'unlink', fileName ) )
+        .on( 'addDir', ( fileName ) => watchEventMethod( 'addDir', fileName ) )
+        .on( 'unlinkDir', ( fileName ) => watchEventMethod( 'unlinkDir', fileName ) )
+        .on( 'error', ( error ) => {
+          console.error( `Watcher error for ${dirname}.` );
+          console.error( error );
+        } );
+
+        this._fileWatchers[dirname] = newWatcher;
+      }
+      catch( ex ){
+        console.warn( "Unable to setup watcher for " + fileName );
+      }
     }
-    catch( ex ){
-      console.warn( "Unable to setup watcher for " + fileName );
+
+    if( this._fileWatchers[dirname] && watchHook !== null ){
+      this._fileWatchers[dirname].watchHook = watchHook;
     }
   }
 
@@ -828,11 +1031,4 @@ class DynamicSystem{
 
 ////////////////////////////////EXPORTS//////////////////////////////////////////
 const dynamicSystem = new DynamicSystem();
-exports.dynamic = dynamicSystem.Dynamic.bind( dynamicSystem );
-exports.superDynamic = dynamicSystem.SuperDynamic.bind( dynamicSystem );
-exports.dynamicFile = dynamicSystem.DynamicFile.bind( dynamicSystem );
-exports.dynamicDir = dynamicSystem.DynamicDirectory.bind( dynamicSystem );
-exports.reload = dynamicSystem.Reload.bind( dynamicSystem );
-exports.initialize = dynamicSystem.Initialize.bind( dynamicSystem );
-exports.dynamicCaller = dynamicSystem.Caller.bind( dynamicSystem );
-exports.makeGlobal = dynamicSystem.GlobalSyntax.bind( dynamicSystem );
+module.exports = dynamicSystem;

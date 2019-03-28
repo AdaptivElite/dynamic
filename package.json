@@ -15,9 +15,11 @@
     "persistent"
   ],
   "author": "AdaptivElite <steven@adaptivelite.com> (http://www.adaptivelite.com)",
-  "license": "ISC",
-  "dependencies": {},
+  "license": "GPL-3.0",
+  "dependencies": {
+    "chokidar": "^2.1.5"
+  },
   "devDependencies": {
-    "mocha": "^3.2.0"
+    "mocha": "^6.0.2"
   }
 }
