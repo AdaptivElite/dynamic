@@ -210,7 +210,7 @@ class DynamicSystem{
           Object.keys( dynamicLinks ).filter( dynamicLink => dynamicLink !== "__dynamicLoader" ).forEach( dynamicLink => predicate( dynamicLink, dynamicLinks[dynamicLink], dynamicFiles.files[i], "add" ) );
           break;
         case "super":
-          dynamicLinks = this.superDynamic( path.join( dynamicFiles.files[i].directory, dynamicFiles.files[i].name ), caller );
+          dynamicLinks = this.superDynamic( "./" + path.join( directory, dynamicFiles.files[i].directory, dynamicFiles.files[i].name ), caller );
           Object.keys( dynamicLinks ).filter( dynamicLink => dynamicLink !== "__dynamicLoader" ).forEach( dynamicLink => predicate( dynamicLink, dynamicLinks[dynamicLink], dynamicFiles.files[i], "add" ) );
           break;
         case "raw":
@@ -647,7 +647,28 @@ class DynamicSystem{
       this._dynamicProxyMap[fileName][dynamicName] = {};
     }
 
-    return this._dynamicMethodMap[fileName][dynamicName];
+    return new Proxy( this._dynamicMethodMap[fileName][dynamicName], {
+      construct: ( _, args, newTarget ) => {
+        return new this._dynamicMethodMap[fileName][dynamicName]( ...args );
+      },
+      get: ( _, property ) => {
+        if( this._dynamicMethodMap[fileName][dynamicName][property] ){
+          return this._dynamicMethodMap[fileName][dynamicName][property];
+        }
+        else{
+          return this._dynamicMethodMap[fileName][dynamicName].__original[property];
+        }
+      },
+      set: ( _, property, value ) => {
+        if( this._dynamicMethodMap[fileName][dynamicName][property] ){
+          return this._dynamicMethodMap[fileName][dynamicName][property] = value;
+        }
+        else{
+          return this._dynamicMethodMap[fileName][dynamicName].__original[property] = value;
+        }
+      }
+    } );
+      
   }
 
   /**
@@ -853,7 +874,29 @@ class DynamicSystem{
       this._dynamicInstanceMap[fileName][dynamicName][dynamicId].__rebuild( initialDynamic );
     }
 
-    return this._dynamicMethodMap[fileName][dynamicName];
+    this._dynamicMethodMap[fileName][dynamicName].__original = initialDynamic;
+
+    return new Proxy( this._dynamicMethodMap[fileName][dynamicName], {
+      construct: ( _, args, newTarget ) => {
+        return new this._dynamicMethodMap[fileName][dynamicName]( ...args );
+      },
+      get: ( _, property ) => {
+        if( this._dynamicMethodMap[fileName][dynamicName][property] ){
+          return this._dynamicMethodMap[fileName][dynamicName][property];
+        }
+        else{
+          return this._dynamicMethodMap[fileName][dynamicName].__original[property];
+        }
+      },
+      set: ( _, property, value ) => {
+        if( this._dynamicMethodMap[fileName][dynamicName][property] ){
+          return this._dynamicMethodMap[fileName][dynamicName][property] = value;
+        }
+        else{
+          return this._dynamicMethodMap[fileName][dynamicName].__original[property] = value;
+        }
+      }
+    } );
   }
 
   async _walkDirectory( directory, filter, includeSubDirectories = false ){
